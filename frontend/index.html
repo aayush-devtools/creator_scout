@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DevTools Creator Scout</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #0f1117;
+      --surface:  #1a1d27;
+      --border:   #2a2d3e;
+      --accent:   #6c63ff;
+      --accent2:  #00d4aa;
+      --text:     #e2e8f0;
+      --muted:    #64748b;
+      --danger:   #ef4444;
+      --warn:     #f59e0b;
+      --success:  #10b981;
+    }
+
+    body { background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, sans-serif; font-size: 14px; min-height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 28px; background: var(--surface);
+      border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; }
+    .logo-dot { width: 10px; height: 10px; background: var(--accent); border-radius: 50%; }
+    nav { display: flex; gap: 4px; }
+    nav button {
+      background: none; border: none; color: var(--muted); padding: 8px 16px;
+      border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all .15s;
+    }
+    nav button.active, nav button:hover { background: var(--border); color: var(--text); }
+    nav button.active { color: var(--accent); }
+    .scout-btn {
+      background: var(--accent); color: #fff; border: none; padding: 9px 20px;
+      border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .scout-btn:hover { opacity: .85; }
+    .scout-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      display: flex; gap: 16px; padding: 20px 28px; flex-wrap: wrap;
+    }
+    .stat-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 16px 24px; flex: 1; min-width: 140px;
+    }
+    .stat-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 6px; }
+    .stat-value { font-size: 28px; font-weight: 700; }
+    .stat-value.accent { color: var(--accent); }
+    .stat-value.green  { color: var(--success); }
+    .stat-value.amber  { color: var(--warn); }
+
+    /* ── Main content ── */
+    main { padding: 0 28px 40px; }
+
+    /* ── Filter bar ── */
+    .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+    .filter-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      padding: 6px 14px; border-radius: 20px; cursor: pointer; font-size: 13px; transition: all .15s;
+    }
+    .filter-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(108,99,255,.1); }
+    .filter-btn:hover:not(.active) { border-color: var(--muted); color: var(--text); }
+    .search-input {
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 14px; border-radius: 8px; font-size: 13px; width: 200px;
+    }
+    .search-input:focus { outline: none; border-color: var(--accent); }
+    .country-select {
+      background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 12px; border-radius: 8px; font-size: 13px;
+      cursor: pointer; appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
+    }
+    .country-select:focus { outline: none; border-color: var(--accent); }
+    .filter-right { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+
+    /* ── Table ── */
+    .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left; padding: 12px 16px; color: var(--muted); font-size: 12px;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,.02);
+    }
+    tbody tr { border-bottom: 1px solid var(--border); transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: rgba(255,255,255,.03); }
+    td { padding: 12px 16px; vertical-align: middle; }
+
+    .channel-cell { display: flex; align-items: center; gap: 12px; }
+    .channel-thumb {
+      width: 36px; height: 36px; border-radius: 50%; object-fit: cover;
+      background: var(--border); flex-shrink: 0;
+    }
+    .channel-name { font-weight: 600; font-size: 14px; }
+    .channel-link { color: var(--muted); font-size: 12px; text-decoration: none; }
+    .channel-link:hover { color: var(--accent); }
+
+    /* Score pill */
+    .score-pill {
+      display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 13px; font-weight: 600;
+    }
+    .score-high  { background: rgba(16,185,129,.15); color: var(--success); }
+    .score-mid   { background: rgba(245,158,11,.15);  color: var(--warn); }
+    .score-low   { background: rgba(100,116,139,.15); color: var(--muted); }
+
+    /* Sub-scores */
+    .sub-scores { display: flex; gap: 6px; flex-wrap: wrap; }
+    .sub-score { font-size: 11px; color: var(--muted); background: var(--border); padding: 2px 7px; border-radius: 4px; }
+
+    /* Status badge */
+    .status-badge {
+      display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 500;
+    }
+    .status-new      { background: rgba(108,99,255,.12); color: var(--accent); }
+    .status-monitor  { background: rgba(245,158,11,.12);  color: var(--warn); }
+    .status-outreach { background: rgba(16,185,129,.12);  color: var(--success); }
+    .status-pass     { background: rgba(100,116,139,.12); color: var(--muted); }
+
+    /* Actions */
+    .action-group { display: flex; gap: 6px; }
+    .action-btn {
+      border: 1px solid var(--border); background: none; color: var(--muted);
+      padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all .15s;
+    }
+    .action-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .action-btn.danger:hover { border-color: var(--danger); color: var(--danger); }
+    .action-btn.outreach:hover { border-color: var(--success); color: var(--success); }
+
+    /* ── Partners page ── */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 16px; padding-top: 4px;
+    }
+    .section-title { font-size: 18px; font-weight: 700; }
+    .add-partner-form {
+      display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .add-partner-form input {
+      flex: 1; min-width: 260px; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 9px 14px; border-radius: 8px; font-size: 13px;
+    }
+    .add-partner-form input:focus { outline: none; border-color: var(--accent); }
+    .add-btn {
+      background: var(--accent); color: #fff; border: none; padding: 9px 18px;
+      border-radius: 8px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+    }
+    .add-btn:hover { opacity: .85; }
+    .add-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    .partners-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .partner-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .partner-card img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: var(--border); }
+    .partner-info { flex: 1; min-width: 0; }
+    .partner-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .partner-subs { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    .remove-btn { color: var(--muted); background: none; border: none; cursor: pointer; font-size: 18px; padding: 4px; line-height: 1; }
+    .remove-btn:hover { color: var(--danger); }
+
+    /* ── Scout config panel ── */
+    .scout-panel {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 24px; max-width: 600px;
+    }
+    .scout-panel h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .scout-panel p  { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+    .keywords-list  { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .keyword-item   { display: flex; align-items: center; gap: 8px; }
+    .keyword-item input {
+      flex: 1; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 12px; border-radius: 7px; font-size: 13px;
+    }
+    .keyword-item input:focus { outline: none; border-color: var(--accent); }
+    .rm-kw { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1; }
+    .rm-kw:hover { color: var(--danger); }
+    .add-kw-btn {
+      background: none; border: 1px dashed var(--border); color: var(--muted);
+      width: 100%; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 13px; transition: all .15s;
+    }
+    .add-kw-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .scout-run-btn {
+      background: var(--accent); color: #fff; border: none; padding: 11px 24px;
+      border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; width: 100%; transition: opacity .15s; margin-top: 12px;
+    }
+    .scout-run-btn:hover { opacity: .85; }
+    .scout-run-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+    /* ── Progress bar ── */
+    .job-status {
+      margin-top: 16px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px; font-size: 13px;
+    }
+    .job-status .label { color: var(--muted); margin-bottom: 6px; }
+    .job-status .value { font-weight: 600; }
+    .progress-bar { height: 6px; background: var(--border); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s; }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 24px; right: 24px; background: var(--surface);
+      border: 1px solid var(--border); color: var(--text); padding: 12px 20px;
+      border-radius: 10px; font-size: 14px; opacity: 0; pointer-events: none;
+      transition: opacity .25s; z-index: 100; max-width: 320px;
+    }
+    #toast.show { opacity: 1; pointer-events: auto; }
+    #toast.error { border-color: var(--danger); color: var(--danger); }
+    #toast.success { border-color: var(--success); color: var(--success); }
+
+    /* ── Country tag ── */
+    .country-tag { font-size: 13px; white-space: nowrap; }
+
+    /* ── Empty state ── */
+    .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+    .empty .icon { font-size: 40px; margin-bottom: 12px; }
+    .empty h3 { font-size: 16px; color: var(--text); margin-bottom: 6px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 700px) {
+      header { flex-wrap: wrap; gap: 10px; }
+      .stats-bar { padding: 16px; }
+      main { padding: 0 16px 40px; }
+    }
+
+    /* page visibility */
+    .page { display: none; }
+    .page.active { display: block; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    Creator Scout
+  </div>
+  <nav>
+    <button class="active" onclick="showPage('prospects')">Prospects</button>
+    <button onclick="showPage('partners')">Partners</button>
+    <button onclick="showPage('scout')">Scout</button>
+  </nav>
+  <button class="scout-btn" id="quickScoutBtn" onclick="quickScout()">
+    <span id="scoutBtnIcon">▶</span> Run Scout
+  </button>
+</header>
+
+<!-- Stats -->
+<div class="stats-bar" id="statsBar">
+  <div class="stat-card"><div class="stat-label">Total Prospects</div><div class="stat-value accent" id="stat-total">–</div></div>
+  <div class="stat-card"><div class="stat-label">New Today</div><div class="stat-value green" id="stat-today">–</div></div>
+  <div class="stat-card"><div class="stat-label">High Priority</div><div class="stat-value accent" id="stat-priority">–</div></div>
+  <div class="stat-card"><div class="stat-label">Outreach</div><div class="stat-value green" id="stat-outreach">–</div></div>
+  <div class="stat-card"><div class="stat-label">Monitoring</div><div class="stat-value amber" id="stat-monitor">–</div></div>
+  <div class="stat-card"><div class="stat-label">Partners</div><div class="stat-value" id="stat-partners">–</div></div>
+</div>
+
+<main>
+
+  <!-- ── Prospects Page ── -->
+  <div class="page active" id="page-prospects">
+    <div class="filter-bar">
+      <button class="filter-btn active" onclick="setFilter('all', this)">All</button>
+      <button class="filter-btn" onclick="setFilter('new', this)">New</button>
+      <button class="filter-btn" onclick="setFilter('monitor', this)">Monitor</button>
+      <button class="filter-btn" onclick="setFilter('outreach', this)">Outreach</button>
+      <button class="filter-btn" onclick="setFilter('pass', this)">Passed</button>
+      <div class="filter-right">
+        <select class="country-select" id="countryFilter" onchange="renderTable()">
+          <option value="">🌍 All countries</option>
+        </select>
+        <input class="search-input" id="searchInput" placeholder="Search channels…" oninput="renderTable()" />
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Channel</th>
+            <th>Subscribers</th>
+            <th>Priority</th>
+            <th>Sub-Scores</th>
+            <th>Growth/mo</th>
+            <th>Country</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="prospectsBody"></tbody>
+      </table>
+      <div class="empty" id="prospectsEmpty" style="display:none">
+        <div class="icon">🔍</div>
+        <h3>No prospects yet</h3>
+        <p>Run a Scout job to discover new channels</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Partners Page ── -->
+  <div class="page" id="page-partners">
+    <div class="section-header">
+      <div class="section-title">Top Partners (Baseline)</div>
+    </div>
+    <div class="add-partner-form">
+      <input id="partnerUrlInput" placeholder="YouTube channel URL (e.g. https://youtube.com/@fireship)" />
+      <input id="partnerNotesInput" placeholder="Notes (optional)" style="max-width:200px" />
+      <button class="add-btn" id="addPartnerBtn" onclick="addPartner()">Add Partner</button>
+    </div>
+    <div class="partners-grid" id="partnersGrid"></div>
+    <div class="empty" id="partnersEmpty" style="display:none">
+      <div class="icon">⭐</div>
+      <h3>No partners added</h3>
+      <p>Add your top-performing YouTube partners to calibrate the scoring model</p>
+    </div>
+  </div>
+
+  <!-- ── Scout Page ── -->
+  <div class="page" id="page-scout">
+    <div class="scout-panel">
+      <h3>Scout Configuration</h3>
+      <p>Search keywords used to discover new tech channels on YouTube. Each keyword runs a separate search.</p>
+
+      <div class="keywords-list" id="keywordsList"></div>
+      <button class="add-kw-btn" onclick="addKeyword()">+ Add keyword</button>
+
+      <button class="scout-run-btn" id="scoutRunBtn" onclick="runScout()">Run Scout</button>
+
+      <div class="job-status" id="jobStatus" style="display:none">
+        <div class="label">Last job status</div>
+        <div class="value" id="jobStatusText">–</div>
+        <div class="progress-bar"><div class="progress-fill" id="jobProgress" style="width:0%"></div></div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let allProspects = [];
+let currentFilter = 'all';
+let scoutPollingInterval = null;
+
+const DEFAULT_KEYWORDS = [
+  'programming tutorial',
+  'developer tools review',
+  'software engineering',
+  'web development',
+  'coding productivity',
+  'tech stack explained',
+];
+
+// ── Init ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadStats();
+  loadProspects();
+  checkScoutStatus();
+  initKeywords();
+});
+
+// ── Navigation ─────────────────────────────────────────────────────────────
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.querySelectorAll('nav button').forEach((b, i) => {
+    b.classList.toggle('active', ['prospects','partners','scout'][i] === name);
+  });
+  if (name === 'partners') loadPartners();
+  if (name === 'scout') checkScoutStatus();
+}
+
+// ── Stats ──────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const s = await api('/api/stats');
+    document.getElementById('stat-total').textContent    = s.total ?? 0;
+    document.getElementById('stat-today').textContent    = s.new_today ?? 0;
+    document.getElementById('stat-priority').textContent = s.high_priority ?? 0;
+    document.getElementById('stat-outreach').textContent = s.outreach ?? 0;
+    document.getElementById('stat-monitor').textContent  = s.monitor ?? 0;
+    document.getElementById('stat-partners').textContent = s.partners ?? 0;
+  } catch(e) {}
+}
+
+// ── Prospects ──────────────────────────────────────────────────────────────
+async function loadProspects() {
+  try {
+    allProspects = await api('/api/prospects');
+    populateCountryFilter();
+    renderTable();
+  } catch(e) { toast('Failed to load prospects', 'error'); }
+}
+
+function populateCountryFilter() {
+  const sel = document.getElementById('countryFilter');
+  if (!sel) return;
+  const current = sel.value;
+  const countries = [...new Set(
+    allProspects.map(p => p.country).filter(Boolean)
+  )].sort();
+  sel.innerHTML = '<option value="">🌍 All countries</option>' +
+    countries.map(c => `<option value="${c}" ${c === current ? 'selected' : ''}>${countryFlag(c)} ${c}</option>`).join('');
+}
+
+function setFilter(f, btn) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderTable();
+}
+
+function renderTable() {
+  const q = (document.getElementById('searchInput')?.value || '').toLowerCase();
+  const country = document.getElementById('countryFilter')?.value || '';
+  let rows = allProspects.filter(p => {
+    const matchFilter  = currentFilter === 'all' || p.status === currentFilter;
+    const matchSearch  = !q || p.channel_name.toLowerCase().includes(q);
+    const matchCountry = !country || p.country === country;
+    return matchFilter && matchSearch && matchCountry;
+  });
+
+  const tbody = document.getElementById('prospectsBody');
+  const empty = document.getElementById('prospectsEmpty');
+
+  if (!rows.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = rows.map(p => `
+    <tr id="row-${p.channel_id}">
+      <td>
+        <div class="channel-cell">
+          ${p.thumbnail_url ? `<img class="channel-thumb" src="${p.thumbnail_url}" alt="" onerror="this.style.display='none'">` : ''}
+          <div>
+            <div class="channel-name">${esc(p.channel_name)}</div>
+            <a class="channel-link" href="${p.channel_url}" target="_blank">↗ YouTube</a>
+          </div>
+        </div>
+      </td>
+      <td>${fmtNum(p.subscriber_count)}</td>
+      <td><span class="score-pill ${scoreClass(p.priority_score)}">${p.priority_score ?? '–'}</span></td>
+      <td>
+        <div class="sub-scores">
+          <span class="sub-score" title="Growth">G ${p.growth_score ?? '–'}</span>
+          <span class="sub-score" title="Engagement">E ${p.engagement_score ?? '–'}</span>
+          <span class="sub-score" title="Similarity">S ${p.similarity_score ?? '–'}</span>
+        </div>
+      </td>
+      <td>${p.monthly_sub_growth != null ? '+' + fmtNum(p.monthly_sub_growth) : '–'}</td>
+      <td>${p.country ? `<span class="country-tag">${countryFlag(p.country)} ${p.country}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
+      <td><span class="status-badge status-${p.status}">${p.status}</span></td>
+      <td>
+        <div class="action-group">
+          ${p.status !== 'outreach' ? `<button class="action-btn outreach" onclick="setStatus('${p.channel_id}','outreach')">Outreach</button>` : ''}
+          ${p.status !== 'monitor'  ? `<button class="action-btn" onclick="setStatus('${p.channel_id}','monitor')">Monitor</button>` : ''}
+          ${p.status !== 'pass'     ? `<button class="action-btn danger" onclick="setStatus('${p.channel_id}','pass')">Pass</button>` : ''}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function scoreClass(score) {
+  if (score >= 65) return 'score-high';
+  if (score >= 40) return 'score-mid';
+  return 'score-low';
+}
+
+async function setStatus(channelId, status) {
+  try {
+    await api(`/api/prospects/${channelId}/status`, 'PATCH', { status });
+    const p = allProspects.find(x => x.channel_id === channelId);
+    if (p) p.status = status;
+    renderTable();
+    loadStats();
+    toast(`Marked as ${status}`, 'success');
+  } catch(e) { toast('Update failed', 'error'); }
+}
+
+// ── Partners ───────────────────────────────────────────────────────────────
+async function loadPartners() {
+  try {
+    const partners = await api('/api/partners');
+    const grid = document.getElementById('partnersGrid');
+    const empty = document.getElementById('partnersEmpty');
+    if (!partners.length) { grid.innerHTML = ''; empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    grid.innerHTML = partners.map(p => `
+      <div class="partner-card">
+        ${p.thumbnail_url ? `<img src="${p.thumbnail_url}" alt="" onerror="this.style.display='none'">` : ''}
+        <div class="partner-info">
+          <div class="partner-name">${esc(p.channel_name)}</div>
+          <div class="partner-subs">${fmtNum(p.subscriber_count)} subscribers</div>
+          ${p.notes ? `<div class="partner-subs">${esc(p.notes)}</div>` : ''}
+        </div>
+        <button class="remove-btn" onclick="removePartner('${p.channel_id}')" title="Remove">×</button>
+      </div>
+    `).join('');
+    loadStats();
+  } catch(e) { toast('Failed to load partners', 'error'); }
+}
+
+async function addPartner() {
+  const url   = document.getElementById('partnerUrlInput').value.trim();
+  const notes = document.getElementById('partnerNotesInput').value.trim();
+  if (!url) { toast('Please enter a YouTube channel URL', 'error'); return; }
+
+  const btn = document.getElementById('addPartnerBtn');
+  btn.disabled = true; btn.textContent = 'Adding…';
+  try {
+    const res = await api('/api/partners', 'POST', { channel_url: url, notes });
+    toast(`Added: ${res.channel_name}`, 'success');
+    document.getElementById('partnerUrlInput').value = '';
+    document.getElementById('partnerNotesInput').value = '';
+    loadPartners();
+  } catch(e) {
+    toast(e.message || 'Failed to add partner', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Add Partner';
+  }
+}
+
+async function removePartner(channelId) {
+  try {
+    await api(`/api/partners/${channelId}`, 'DELETE');
+    loadPartners();
+    toast('Partner removed', 'success');
+  } catch(e) { toast('Failed to remove', 'error'); }
+}
+
+// ── Scout ──────────────────────────────────────────────────────────────────
+function initKeywords() {
+  const list = document.getElementById('keywordsList');
+  if (!list) return;
+  list.innerHTML = '';
+  DEFAULT_KEYWORDS.forEach(kw => appendKeyword(kw));
+}
+
+function appendKeyword(value = '') {
+  const list = document.getElementById('keywordsList');
+  const item = document.createElement('div');
+  item.className = 'keyword-item';
+  item.innerHTML = `
+    <input type="text" value="${esc(value)}" placeholder="Keyword…" />
+    <button class="rm-kw" onclick="this.parentElement.remove()">×</button>
+  `;
+  list.appendChild(item);
+}
+
+function addKeyword() { appendKeyword(); }
+
+function getKeywords() {
+  return [...document.querySelectorAll('#keywordsList .keyword-item input')]
+    .map(i => i.value.trim()).filter(Boolean);
+}
+
+async function runScout() {
+  const keywords = getKeywords();
+  if (!keywords.length) { toast('Add at least one keyword', 'error'); return; }
+  await _doScout(keywords);
+}
+
+async function quickScout() {
+  await _doScout(DEFAULT_KEYWORDS);
+}
+
+async function _doScout(keywords) {
+  const runBtn   = document.getElementById('scoutRunBtn');
+  const quickBtn = document.getElementById('quickScoutBtn');
+  const icon     = document.getElementById('scoutBtnIcon');
+  if (runBtn)   { runBtn.disabled = true; runBtn.textContent = '⏳ Scouting…'; }
+  if (quickBtn) { quickBtn.disabled = true; }
+  if (icon)     { icon.textContent = '⏳'; }
+
+  const status = document.getElementById('jobStatus');
+  if (status) status.style.display = 'block';
+  updateJobUI({ status: 'running', channels_found: 0 });
+
+  try {
+    const res = await api('/api/scout', 'POST', { keywords, results_per_keyword: 15 });
+    updateJobUI(res);
+    toast(`Scout complete — ${res.channels_found} channels found`, 'success');
+    loadProspects();
+    loadStats();
+  } catch(e) {
+    updateJobUI({ status: 'failed', channels_found: 0 });
+    toast(e.message || 'Scout failed', 'error');
+  } finally {
+    if (runBtn)   { runBtn.disabled = false; runBtn.textContent = 'Run Scout'; }
+    if (quickBtn) { quickBtn.disabled = false; }
+    if (icon)     { icon.textContent = '▶'; }
+  }
+}
+
+function updateJobUI(s) {
+  const el   = document.getElementById('jobStatusText');
+  const fill = document.getElementById('jobProgress');
+  if (!el) return;
+  const statusMap = { running: '⏳ Running…', completed: '✅ Completed', failed: '❌ Failed', none: 'No jobs yet' };
+  el.textContent = (statusMap[s.status] || s.status) + (s.channels_found ? ` (${s.channels_found} found)` : '');
+  if (fill) fill.style.width = s.status === 'running' ? '60%' : s.status === 'completed' ? '100%' : '0%';
+}
+
+async function checkScoutStatus() {
+  try {
+    const s = await api('/api/scout/status');
+    const el = document.getElementById('jobStatus');
+    if (el && s.status && s.status !== 'none') { el.style.display = 'block'; updateJobUI(s); }
+  } catch(e) {}
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+async function api(path, method = 'GET', body = null) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  return data;
+}
+
+function fmtNum(n) {
+  if (n == null) return '–';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(0) + 'K';
+  return n.toString();
+}
+
+function esc(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function countryFlag(code) {
+  if (!code || code.length !== 2) return '🏳';
+  return String.fromCodePoint(
+    ...code.toUpperCase().split('').map(c => 0x1F1E6 - 65 + c.charCodeAt(0))
+  );
+}
+
+let toastTimer = null;
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'show' + (type ? ' ' + type : '');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.className = '', 3500);
+}
+</script>
+</body>
+</html>
