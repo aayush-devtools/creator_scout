@@ -83,7 +83,28 @@
       background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px;
     }
     .country-select:focus { outline: none; border-color: var(--accent); }
-    .filter-right { display: flex; gap: 8px; margin-left: auto; align-items: center; }
+    .filter-right { display: flex; gap: 8px; margin-left: auto; align-items: center; flex-wrap: wrap; }
+    .filter-meta {
+      width: 100%; font-size: 12px; color: var(--muted); margin-top: 6px;
+      padding: 0 2px;
+    }
+    .filter-check {
+      display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+      color: var(--muted); white-space: nowrap; cursor: pointer; user-select: none;
+    }
+    .filter-check input { accent-color: var(--accent); cursor: pointer; }
+    .filter-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .mini-btn {
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    }
+    .mini-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .mini-btn:disabled { opacity: .4; cursor: not-allowed; }
+    .mini-input {
+      width: 140px; background: var(--surface); border: 1px solid var(--border);
+      color: var(--text); padding: 7px 10px; border-radius: 8px; font-size: 13px;
+    }
+    .mini-input:focus { outline: none; border-color: var(--accent); }
 
     /* ── Table ── */
     .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
@@ -278,11 +299,36 @@
       <button class="filter-btn" onclick="setFilter('outreach', this)">Outreach</button>
       <button class="filter-btn" onclick="setFilter('pass', this)">Passed</button>
       <div class="filter-right">
+        <input
+          class="mini-input"
+          id="minSubsFilter"
+          type="number"
+          min="0"
+          step="1000"
+          placeholder="Min subs (100000=100K)"
+          title="Use raw number: 100000 = 100K, 1000000 = 1M"
+          oninput="renderTable()"
+        />
+        <select class="country-select" id="activeMonthsFilter" onchange="renderTable()">
+          <option value="" selected>Any activity</option>
+          <option value="1">Active in 1 month</option>
+          <option value="2">Active in 2 months</option>
+          <option value="3">Active in 3 months</option>
+          <option value="6">Active in 6 months</option>
+        </select>
+        <label class="filter-check" title="If off, rows without a “Last video” date are hidden when an activity window is set.">
+          <input type="checkbox" id="includeUnknownActivity" checked onchange="renderTable()" />
+          Include unknown last upload
+        </label>
+        <div class="filter-actions">
+          <button type="button" class="mini-btn" id="backfillLastVideoBtn" onclick="backfillLastVideo()">Fetch missing Last video</button>
+        </div>
         <select class="country-select" id="countryFilter" onchange="renderTable()">
           <option value="">🌍 All countries</option>
         </select>
         <input class="search-input" id="searchInput" placeholder="Search channels…" oninput="renderTable()" />
       </div>
+      <div class="filter-meta" id="filterMeta" style="display:none"></div>
     </div>
 
     <div class="table-wrap">
@@ -294,6 +340,7 @@
             <th>Priority</th>
             <th>Sub-Scores</th>
             <th>Growth/mo</th>
+            <th>Last Video</th>
             <th>Country</th>
             <th>Status</th>
             <th>Actions</th>
@@ -302,9 +349,9 @@
         <tbody id="prospectsBody"></tbody>
       </table>
       <div class="empty" id="prospectsEmpty" style="display:none">
-        <div class="icon">🔍</div>
-        <h3>No prospects yet</h3>
-        <p>Run a Scout job to discover new channels</p>
+        <div class="icon" id="prospectsEmptyIcon">🔍</div>
+        <h3 id="prospectsEmptyTitle">No prospects yet</h3>
+        <p id="prospectsEmptyText">Run a Scout job to discover new channels</p>
       </div>
     </div>
   </div>
@@ -331,10 +378,26 @@
   <div class="page" id="page-scout">
     <div class="scout-panel">
       <h3>Scout Configuration</h3>
-      <p>Search keywords used to discover new tech channels on YouTube. Each keyword runs a separate search.</p>
+      <p>Search keywords used to discover new tech channels on YouTube. Each keyword runs a separate search. Results and filters are on the <strong>Prospects</strong> tab.</p>
 
       <div class="keywords-list" id="keywordsList"></div>
       <button class="add-kw-btn" onclick="addKeyword()">+ Add keyword</button>
+
+      <div class="keywords-list" style="margin-top:14px">
+        <div class="keyword-item">
+          <input
+            id="scoutMinSubscribers"
+            type="number"
+            min="0"
+            step="1000"
+            placeholder="Min subs (optional, 100000=100K)"
+            title="Use raw number: 100000 = 100K, 1000000 = 1M"
+          />
+        </div>
+        <div class="keyword-item">
+          <input id="scoutMaxAgeMonths" type="number" min="1" max="24" step="1" placeholder="Max months since last upload (optional)" />
+        </div>
+      </div>
 
       <button class="scout-run-btn" id="scoutRunBtn" onclick="runScout()">Run Scout</button>
 
@@ -406,6 +469,28 @@ async function loadProspects() {
   } catch(e) { toast('Failed to load prospects', 'error'); }
 }
 
+async function backfillLastVideo() {
+  const btn = document.getElementById('backfillLastVideoBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Fetching…'; }
+  try {
+    let res = null;
+    try {
+      /* Prefer GET for Vercel compatibility. */
+      res = await api('/api/prospects/backfill-last-video?limit=60');
+    } catch (e) {
+      /* Fallback for older backend process still exposing POST-only route. */
+      if (!String(e.message || '').toLowerCase().includes('method not allowed')) throw e;
+      res = await api('/api/prospects/backfill-last-video?limit=60', 'POST');
+    }
+    toast(`Updated ${res.updated} of ${res.attempted} · ${res.remaining_without_date} still missing`, 'success');
+    await loadProspects();
+  } catch (e) {
+    toast(e.message || 'Backfill failed', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Fetch missing Last video'; }
+  }
+}
+
 function populateCountryFilter() {
   const sel = document.getElementById('countryFilter');
   if (!sel) return;
@@ -427,19 +512,67 @@ function setFilter(f, btn) {
 function renderTable() {
   const q = (document.getElementById('searchInput')?.value || '').toLowerCase();
   const country = document.getElementById('countryFilter')?.value || '';
+  const minSubs = Number(document.getElementById('minSubsFilter')?.value || 0);
+  const activeMonths = Number(document.getElementById('activeMonthsFilter')?.value || 0);
+  const includeUnknown = document.getElementById('includeUnknownActivity')?.checked !== false;
   let rows = allProspects.filter(p => {
     const matchFilter  = currentFilter === 'all' || p.status === currentFilter;
     const matchSearch  = !q || p.channel_name.toLowerCase().includes(q);
     const matchCountry = !country || p.country === country;
-    return matchFilter && matchSearch && matchCountry;
+    const matchSubs = !minSubs || Number(p.subscriber_count || 0) >= minSubs;
+    const hasVideoDate = !!p.last_video_published_at;
+    const matchActivity = !activeMonths
+      || (includeUnknown && !hasVideoDate)
+      || isRecentWithinMonths(p.last_video_published_at, activeMonths);
+    return matchFilter && matchSearch && matchCountry && matchSubs && matchActivity;
   });
 
   const tbody = document.getElementById('prospectsBody');
   const empty = document.getElementById('prospectsEmpty');
+  const meta = document.getElementById('filterMeta');
+  const total = allProspects.length;
+
+  if (meta) {
+    if (total) {
+      meta.style.display = 'block';
+      const missingVid = allProspects.filter(p => !p.last_video_published_at).length;
+      let line = `Showing ${rows.length} of ${total} prospects` +
+        (rows.length < total ? ' (filters hide the rest)' : '');
+      if (missingVid && activeMonths) {
+        line += ` · ${missingVid} row(s) still missing “Last video” — click Fetch missing Last video or turn off strict activity.`;
+      }
+      meta.textContent = line;
+    } else {
+      meta.style.display = 'none';
+      meta.textContent = '';
+    }
+  }
 
   if (!rows.length) {
     tbody.innerHTML = '';
     empty.style.display = 'block';
+    const icon = document.getElementById('prospectsEmptyIcon');
+    const title = document.getElementById('prospectsEmptyTitle');
+    const text = document.getElementById('prospectsEmptyText');
+    if (!total) {
+      if (icon) icon.textContent = '🔍';
+      if (title) title.textContent = 'No prospects yet';
+      if (text) text.textContent = 'Run a Scout job to discover new channels';
+    } else {
+      if (icon) icon.textContent = '⚙️';
+      if (title) title.textContent = 'No rows match your filters';
+      if (text) {
+        const bits = [];
+        if (minSubs >= 1000) bits.push(`min subscribers ≥ ${fmtNum(minSubs)}`);
+        if (activeMonths) bits.push(`last upload within ~${activeMonths} month(s)`);
+        if (q) bits.push(`search “${q}”`);
+        if (country) bits.push(`country ${country}`);
+        if (currentFilter !== 'all') bits.push(`status “${currentFilter}”`);
+        text.textContent = bits.length
+          ? `Try loosening: ${bits.join('; ')}. Many older rows have no “Last video” until you run Fetch missing Last video (Prospects bar) a few times, or enable Include unknown last upload.`
+          : 'Clear filters or adjust them. Use Fetch missing Last video to populate dates for older prospects.';
+      }
+    }
     return;
   }
   empty.style.display = 'none';
@@ -465,6 +598,7 @@ function renderTable() {
         </div>
       </td>
       <td>${p.monthly_sub_growth != null ? '+' + fmtNum(p.monthly_sub_growth) : '–'}</td>
+      <td>${fmtDate(p.last_video_published_at)}</td>
       <td>${p.country ? `<span class="country-tag">${countryFlag(p.country)} ${p.country}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
       <td><span class="status-badge status-${p.status}">${p.status}</span></td>
       <td>
@@ -575,14 +709,25 @@ function getKeywords() {
 async function runScout() {
   const keywords = getKeywords();
   if (!keywords.length) { toast('Add at least one keyword', 'error'); return; }
-  await _doScout(keywords);
+  await _doScout(keywords, getScoutFilters());
 }
 
 async function quickScout() {
-  await _doScout(DEFAULT_KEYWORDS);
+  await _doScout(DEFAULT_KEYWORDS, getScoutFilters());
 }
 
-async function _doScout(keywords) {
+function getScoutFilters() {
+  const minSubscribersRaw = document.getElementById('scoutMinSubscribers')?.value?.trim() || '';
+  const maxAgeMonthsRaw = document.getElementById('scoutMaxAgeMonths')?.value?.trim() || '';
+  const minSubscribers = minSubscribersRaw ? Number(minSubscribersRaw) : null;
+  const maxAgeMonths = maxAgeMonthsRaw ? Number(maxAgeMonthsRaw) : null;
+  return {
+    min_subscribers: minSubscribers && minSubscribers > 0 ? minSubscribers : null,
+    max_last_video_age_months: maxAgeMonths && maxAgeMonths > 0 ? maxAgeMonths : null,
+  };
+}
+
+async function _doScout(keywords, filters) {
   const runBtn   = document.getElementById('scoutRunBtn');
   const quickBtn = document.getElementById('quickScoutBtn');
   const icon     = document.getElementById('scoutBtnIcon');
@@ -595,7 +740,12 @@ async function _doScout(keywords) {
   updateJobUI({ status: 'running', channels_found: 0 });
 
   try {
-    const res = await api('/api/scout', 'POST', { keywords, results_per_keyword: 15 });
+    const res = await api('/api/scout', 'POST', {
+      keywords,
+      results_per_keyword: 15,
+      min_subscribers: filters.min_subscribers,
+      max_last_video_age_months: filters.max_last_video_age_months,
+    });
     updateJobUI(res);
     toast(`Scout complete — ${res.channels_found} channels found`, 'success');
     loadProspects();
@@ -642,6 +792,29 @@ function fmtNum(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000)     return (n / 1_000).toFixed(0) + 'K';
   return n.toString();
+}
+
+function fmtDate(value) {
+  if (!value) return '<span style="color:var(--muted)">–</span>';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '<span style="color:var(--muted)">–</span>';
+  return d.toLocaleDateString();
+}
+
+function isRecentWithinMonths(value, months) {
+  if (!value || !months) return false;
+  const published = new Date(value);
+  if (Number.isNaN(published.getTime())) return false;
+  const MS_PER_DAY = 24 * 60 * 60 * 1000;
+  const pubDay = Date.UTC(
+    published.getUTCFullYear(),
+    published.getUTCMonth(),
+    published.getUTCDate()
+  );
+  const now = new Date();
+  const nowDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const daysOld = Math.floor((nowDay - pubDay) / MS_PER_DAY);
+  return daysOld <= (months * 31);
 }
 
 function esc(str) {

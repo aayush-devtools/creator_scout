@@ -1,10 +1,10 @@
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -124,6 +124,20 @@ DEFAULT_KEYWORDS = [
 class ScoutRequest(BaseModel):
     keywords: List[str] = DEFAULT_KEYWORDS
     results_per_keyword: int = 15
+    min_subscribers: Optional[int] = None
+    max_last_video_age_months: Optional[int] = None
+
+
+def _is_recent_within_months(published_at_iso: str, months: int) -> bool:
+    if not published_at_iso or months <= 0:
+        return False
+    try:
+        published_at = datetime.fromisoformat(published_at_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    days_old = (datetime.now(timezone.utc).date() - published_at.date()).days
+    # Use a day-based inclusive window to avoid excluding edge cases by time-of-day.
+    return days_old <= months * 31
 
 
 @app.post("/api/scout")
@@ -186,7 +200,8 @@ async def run_scout(request: ScoutRequest):
             async with sem:
                 yt = await youtube.get_channel(ch["id"])
                 sb = await socialblade.get_channel_stats(ch["id"])
-                return ch["id"], yt, sb
+                latest_video_published_at = await youtube.get_latest_video_published_at(ch["id"])
+                return ch["id"], yt, sb, latest_video_published_at
 
         enriched_results = await asyncio.gather(
             *[enrich(ch) for ch in candidates], return_exceptions=True
@@ -198,13 +213,26 @@ async def run_scout(request: ScoutRequest):
             for item in enriched_results:
                 if isinstance(item, Exception):
                     continue
-                ch_id, yt, sb = item
+                ch_id, yt, sb, latest_video_published_at = item
                 if not yt:
                     continue
 
-                scores  = score_channel(yt, sb, partners)
                 snippet = yt.get("snippet", {})
                 stats   = yt.get("statistics", {})
+                subscriber_count = int(stats.get("subscriberCount", 0))
+
+                if request.min_subscribers is not None and subscriber_count < request.min_subscribers:
+                    continue
+
+                if request.max_last_video_age_months is not None:
+                    if not latest_video_published_at:
+                        continue
+                    if not _is_recent_within_months(
+                        latest_video_published_at, request.max_last_video_age_months
+                    ):
+                        continue
+
+                scores = score_channel(yt, sb, partners)
 
                 with dict_cursor(conn2) as cur:
                     cur.execute("""
@@ -212,14 +240,32 @@ async def run_scout(request: ScoutRequest):
                             (channel_id, channel_name, channel_url, subscriber_count, view_count,
                              video_count, description, thumbnail_url, country,
                              growth_score, engagement_score, similarity_score, priority_score,
-                             monthly_sub_growth, sb_grade, status, discovered_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s)
-                        ON CONFLICT (channel_id) DO NOTHING
+                             monthly_sub_growth, sb_grade, status, discovered_at, last_video_published_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s,%s)
+                        ON CONFLICT (channel_id) DO UPDATE SET
+                            channel_name       = EXCLUDED.channel_name,
+                            channel_url        = EXCLUDED.channel_url,
+                            subscriber_count   = EXCLUDED.subscriber_count,
+                            view_count         = EXCLUDED.view_count,
+                            video_count        = EXCLUDED.video_count,
+                            description        = EXCLUDED.description,
+                            thumbnail_url      = EXCLUDED.thumbnail_url,
+                            country            = EXCLUDED.country,
+                            growth_score       = EXCLUDED.growth_score,
+                            engagement_score   = EXCLUDED.engagement_score,
+                            similarity_score   = EXCLUDED.similarity_score,
+                            priority_score     = EXCLUDED.priority_score,
+                            monthly_sub_growth = EXCLUDED.monthly_sub_growth,
+                            sb_grade           = EXCLUDED.sb_grade,
+                            last_video_published_at = COALESCE(
+                                EXCLUDED.last_video_published_at,
+                                prospects.last_video_published_at
+                            )
                     """, (
                         ch_id,
                         snippet.get("title", ""),
                         f"https://youtube.com/channel/{ch_id}",
-                        int(stats.get("subscriberCount", 0)),
+                        subscriber_count,
                         int(stats.get("viewCount", 0)),
                         int(stats.get("videoCount", 0)),
                         snippet.get("description", "")[:500],
@@ -232,6 +278,7 @@ async def run_scout(request: ScoutRequest):
                         sb.get("monthly_sub_growth") if sb else None,
                         sb.get("grade") if sb else None,
                         datetime.utcnow().isoformat(),
+                        latest_video_published_at,
                     ))
                 conn2.commit()
                 processed += 1
@@ -298,6 +345,82 @@ async def list_prospects(status: Optional[str] = None, min_score: Optional[float
             return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+@app.api_route("/api/prospects/backfill-last-video", methods=["GET", "POST"])
+async def backfill_last_video(limit: int = Query(40, ge=1, le=120)):
+    """
+    Fetches latest public video timestamp from YouTube for prospects missing
+    last_video_published_at. Scout only touches channels returned by search;
+    this fills the gap for older rows so activity filters work.
+    """
+    conn = get_conn()
+    try:
+        with dict_cursor(conn) as cur:
+            cur.execute(
+                """
+                SELECT channel_id FROM prospects
+                WHERE last_video_published_at IS NULL OR last_video_published_at = ''
+                ORDER BY priority_score DESC NULLS LAST
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            channel_ids = [r["channel_id"] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    sem = asyncio.Semaphore(6)
+
+    async def fetch_one(cid: str):
+        async with sem:
+            return cid, await youtube.get_latest_video_published_at(cid)
+
+    results = await asyncio.gather(
+        *[fetch_one(cid) for cid in channel_ids], return_exceptions=True
+    )
+
+    updated = 0
+    conn2 = get_conn()
+    try:
+        with dict_cursor(conn2) as cur:
+            for item in results:
+                if isinstance(item, Exception):
+                    continue
+                cid, published_at = item
+                if not published_at:
+                    continue
+                cur.execute(
+                    """
+                    UPDATE prospects SET last_video_published_at = %s
+                    WHERE channel_id = %s
+                    AND (last_video_published_at IS NULL OR last_video_published_at = '')
+                    """,
+                    (published_at, cid),
+                )
+                updated += cur.rowcount
+        conn2.commit()
+    finally:
+        conn2.close()
+
+    conn3 = get_conn()
+    try:
+        with dict_cursor(conn3) as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM prospects
+                WHERE last_video_published_at IS NULL OR last_video_published_at = ''
+                """
+            )
+            remaining = cur.fetchone()["cnt"]
+    finally:
+        conn3.close()
+
+    return {
+        "attempted": len(channel_ids),
+        "updated": updated,
+        "remaining_without_date": remaining,
+    }
 
 
 class StatusUpdate(BaseModel):

@@ -41,7 +41,8 @@ def init_db():
                     monthly_sub_growth INTEGER,
                     sb_grade TEXT,
                     status TEXT DEFAULT 'new',
-                    discovered_at TEXT
+                    discovered_at TEXT,
+                    last_video_published_at TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS scout_jobs (
@@ -54,6 +55,11 @@ def init_db():
                     error        TEXT
                 );
             """)
+
+            # Backfill column for existing databases.
+            cur.execute(
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS last_video_published_at TEXT"
+            )
 
 
 def get_conn():

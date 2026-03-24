@@ -90,3 +90,19 @@ class YouTubeClient:
                     'description': item['snippet'].get('description', ''),
                 })
             return channels
+
+    async def get_latest_video_published_at(self, channel_id: str) -> Optional[str]:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(f"{YOUTUBE_API_BASE}/search", params={
+                "part": "snippet",
+                "channelId": channel_id,
+                "type": "video",
+                "order": "date",
+                "maxResults": 1,
+                "key": self.api_key,
+            })
+            data = resp.json()
+            items = data.get("items", [])
+            if not items:
+                return None
+            return items[0].get("snippet", {}).get("publishedAt")
