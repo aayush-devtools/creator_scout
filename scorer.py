@@ -1,5 +1,74 @@
 import math
+import json
+from datetime import datetime
 from typing import Optional, List
+
+
+def compute_roi_metrics(videos: list, subscriber_count: int) -> dict:
+    """Compute ROI-related metrics from recent video performance data."""
+    if not videos:
+        return {
+            "avg_views_last5": None,
+            "avg_likes_last5": None,
+            "avg_comments_last5": None,
+            "upload_frequency_days": None,
+            "roi_score": 0.0,
+        }
+
+    avg_views    = sum(v["view_count"]   for v in videos) / len(videos)
+    avg_likes    = sum(v["like_count"]   for v in videos) / len(videos)
+    avg_comments = sum(v["comment_count"] for v in videos) / len(videos)
+
+    # Upload frequency: avg days between consecutive videos
+    upload_frequency_days = None
+    dates = sorted(
+        [v["published_at"] for v in videos if v.get("published_at")],
+        reverse=True,
+    )
+    if len(dates) >= 2:
+        try:
+            parsed = [datetime.fromisoformat(d.replace("Z", "+00:00")) for d in dates]
+            gaps = [(parsed[i] - parsed[i + 1]).days for i in range(len(parsed) - 1)]
+            upload_frequency_days = sum(gaps) / len(gaps)
+        except Exception:
+            pass
+
+    # ── ROI Score (0–100) ────────────────────────────────────────────────────
+    roi_score = 0.0
+    if subscriber_count > 0 and avg_views > 0:
+        # 1. View rate: % of subscribers who watch recent videos (20% = excellent)
+        view_rate = avg_views / subscriber_count
+        view_rate_score = min(100.0, (view_rate / 0.20) * 100)
+
+        # 2. Engagement rate: (likes + comments) / views (4% = excellent)
+        eng_rate = (avg_likes + avg_comments) / avg_views if avg_views else 0
+        eng_score = min(100.0, (eng_rate / 0.04) * 100)
+
+        # 3. Upload frequency score (weekly = 100, monthly = 50, quarterly = 10)
+        freq_score = 0.0
+        if upload_frequency_days is not None:
+            if upload_frequency_days <= 7:
+                freq_score = 100.0
+            elif upload_frequency_days <= 30:
+                freq_score = 50.0 + (30 - upload_frequency_days) / 23 * 50
+            elif upload_frequency_days <= 90:
+                freq_score = 10.0 + (90 - upload_frequency_days) / 60 * 40
+            else:
+                freq_score = max(0.0, 10.0 - (upload_frequency_days - 90) / 30)
+
+        roi_score = (
+            view_rate_score * 0.50
+            + eng_score      * 0.30
+            + freq_score     * 0.20
+        )
+
+    return {
+        "avg_views_last5":       round(avg_views),
+        "avg_likes_last5":       round(avg_likes),
+        "avg_comments_last5":    round(avg_comments),
+        "upload_frequency_days": round(upload_frequency_days, 1) if upload_frequency_days is not None else None,
+        "roi_score":             round(roi_score, 1),
+    }
 
 
 def score_channel(yt_data: dict, sb_data: Optional[dict], partners: List[dict]) -> dict:

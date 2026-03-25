@@ -12,7 +12,8 @@ from pydantic import BaseModel
 from database import init_db, get_conn, dict_cursor
 from youtube_client import YouTubeClient
 from socialblade_client import SocialBladeClient
-from scorer import score_channel
+from scorer import score_channel, compute_roi_metrics
+from youtube_client import extract_social_links
 
 load_dotenv()
 
@@ -200,20 +201,25 @@ async def run_scout(request: ScoutRequest):
             async with sem:
                 yt = await youtube.get_channel(ch["id"])
                 sb = await socialblade.get_channel_stats(ch["id"])
-                latest_video_published_at = await youtube.get_latest_video_published_at(ch["id"])
-                return ch["id"], yt, sb, latest_video_published_at
+                videos = await youtube.get_recent_videos_with_stats(ch["id"], count=5)
+                latest_video_published_at = (
+                    videos[0]["published_at"] if videos else
+                    await youtube.get_latest_video_published_at(ch["id"])
+                )
+                return ch["id"], yt, sb, latest_video_published_at, videos
 
         enriched_results = await asyncio.gather(
             *[enrich(ch) for ch in candidates], return_exceptions=True
         )
 
         # ── Step 3: score & save ──
+        import json as _json
         conn2 = get_conn()
         try:
             for item in enriched_results:
                 if isinstance(item, Exception):
                     continue
-                ch_id, yt, sb, latest_video_published_at = item
+                ch_id, yt, sb, latest_video_published_at, videos = item
                 if not yt:
                     continue
 
@@ -233,6 +239,22 @@ async def run_scout(request: ScoutRequest):
                         continue
 
                 scores = score_channel(yt, sb, partners)
+                roi = compute_roi_metrics(videos, subscriber_count)
+
+                # Extract social links from description + branding links
+                description = snippet.get("description", "")
+                branding_links = (
+                    yt.get("brandingSettings", {})
+                    .get("channel", {})
+                    .get("profileLinks", [])
+                )
+                branding_text = " ".join(
+                    link.get("url", "") for link in branding_links
+                )
+                social_links = extract_social_links(description + " " + branding_text)
+                social_links_json = _json.dumps(social_links) if social_links else None
+
+                now_iso = datetime.utcnow().isoformat()
 
                 with dict_cursor(conn2) as cur:
                     cur.execute("""
@@ -240,27 +262,35 @@ async def run_scout(request: ScoutRequest):
                             (channel_id, channel_name, channel_url, subscriber_count, view_count,
                              video_count, description, thumbnail_url, country,
                              growth_score, engagement_score, similarity_score, priority_score,
-                             monthly_sub_growth, sb_grade, status, discovered_at, last_video_published_at)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s,%s)
+                             monthly_sub_growth, sb_grade, status, discovered_at, last_video_published_at,
+                             avg_views_last5, avg_likes_last5, avg_comments_last5,
+                             upload_frequency_days, roi_score, social_links)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'new',%s,%s,%s,%s,%s,%s,%s,%s)
                         ON CONFLICT (channel_id) DO UPDATE SET
-                            channel_name       = EXCLUDED.channel_name,
-                            channel_url        = EXCLUDED.channel_url,
-                            subscriber_count   = EXCLUDED.subscriber_count,
-                            view_count         = EXCLUDED.view_count,
-                            video_count        = EXCLUDED.video_count,
-                            description        = EXCLUDED.description,
-                            thumbnail_url      = EXCLUDED.thumbnail_url,
-                            country            = EXCLUDED.country,
-                            growth_score       = EXCLUDED.growth_score,
-                            engagement_score   = EXCLUDED.engagement_score,
-                            similarity_score   = EXCLUDED.similarity_score,
-                            priority_score     = EXCLUDED.priority_score,
-                            monthly_sub_growth = EXCLUDED.monthly_sub_growth,
-                            sb_grade           = EXCLUDED.sb_grade,
+                            channel_name          = EXCLUDED.channel_name,
+                            channel_url           = EXCLUDED.channel_url,
+                            subscriber_count      = EXCLUDED.subscriber_count,
+                            view_count            = EXCLUDED.view_count,
+                            video_count           = EXCLUDED.video_count,
+                            description           = EXCLUDED.description,
+                            thumbnail_url         = EXCLUDED.thumbnail_url,
+                            country               = EXCLUDED.country,
+                            growth_score          = EXCLUDED.growth_score,
+                            engagement_score      = EXCLUDED.engagement_score,
+                            similarity_score      = EXCLUDED.similarity_score,
+                            priority_score        = EXCLUDED.priority_score,
+                            monthly_sub_growth    = EXCLUDED.monthly_sub_growth,
+                            sb_grade              = EXCLUDED.sb_grade,
                             last_video_published_at = COALESCE(
                                 EXCLUDED.last_video_published_at,
                                 prospects.last_video_published_at
-                            )
+                            ),
+                            avg_views_last5       = EXCLUDED.avg_views_last5,
+                            avg_likes_last5       = EXCLUDED.avg_likes_last5,
+                            avg_comments_last5    = EXCLUDED.avg_comments_last5,
+                            upload_frequency_days = EXCLUDED.upload_frequency_days,
+                            roi_score             = EXCLUDED.roi_score,
+                            social_links          = EXCLUDED.social_links
                     """, (
                         ch_id,
                         snippet.get("title", ""),
@@ -268,7 +298,7 @@ async def run_scout(request: ScoutRequest):
                         subscriber_count,
                         int(stats.get("viewCount", 0)),
                         int(stats.get("videoCount", 0)),
-                        snippet.get("description", "")[:500],
+                        description[:500],
                         snippet.get("thumbnails", {}).get("default", {}).get("url", ""),
                         snippet.get("country", ""),
                         scores["growth_score"],
@@ -277,9 +307,39 @@ async def run_scout(request: ScoutRequest):
                         scores["priority_score"],
                         sb.get("monthly_sub_growth") if sb else None,
                         sb.get("grade") if sb else None,
-                        datetime.utcnow().isoformat(),
+                        now_iso,
                         latest_video_published_at,
+                        roi["avg_views_last5"],
+                        roi["avg_likes_last5"],
+                        roi["avg_comments_last5"],
+                        roi["upload_frequency_days"],
+                        roi["roi_score"],
+                        social_links_json,
                     ))
+
+                    # Upsert recent videos
+                    for v in videos:
+                        cur.execute("""
+                            INSERT INTO channel_recent_videos
+                                (channel_id, video_id, title, published_at, view_count,
+                                 like_count, comment_count, thumbnail_url, fetched_at)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                            ON CONFLICT (channel_id, video_id) DO UPDATE SET
+                                view_count    = EXCLUDED.view_count,
+                                like_count    = EXCLUDED.like_count,
+                                comment_count = EXCLUDED.comment_count,
+                                fetched_at    = EXCLUDED.fetched_at
+                        """, (
+                            ch_id,
+                            v["video_id"],
+                            v["title"],
+                            v["published_at"],
+                            v["view_count"],
+                            v["like_count"],
+                            v["comment_count"],
+                            v["thumbnail_url"],
+                            now_iso,
+                        ))
                 conn2.commit()
                 processed += 1
         finally:
@@ -455,6 +515,137 @@ async def delete_prospect(channel_id: str):
     finally:
         conn.close()
     return {"success": True}
+
+
+@app.get("/api/prospects/{channel_id}/videos")
+async def get_prospect_videos(channel_id: str):
+    """Return cached recent videos for a prospect (from DB, not live API)."""
+    conn = get_conn()
+    try:
+        with dict_cursor(conn) as cur:
+            cur.execute(
+                """
+                SELECT video_id, title, published_at, view_count, like_count,
+                       comment_count, thumbnail_url
+                FROM channel_recent_videos
+                WHERE channel_id = %s
+                ORDER BY published_at DESC NULLS LAST
+                LIMIT 10
+                """,
+                (channel_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+@app.api_route("/api/prospects/refresh-videos", methods=["GET", "POST"])
+async def refresh_videos(limit: int = Query(30, ge=1, le=100)):
+    """
+    Backfill / refresh last-5-video stats for prospects missing video data.
+    Also updates avg_views_last5, roi_score, social_links on the prospect row.
+    """
+    import json as _json2
+    conn = get_conn()
+    try:
+        with dict_cursor(conn) as cur:
+            cur.execute(
+                """
+                SELECT channel_id, subscriber_count, description
+                FROM prospects
+                WHERE avg_views_last5 IS NULL
+                ORDER BY priority_score DESC NULLS LAST
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    sem = asyncio.Semaphore(5)
+
+    async def fetch_one(row):
+        async with sem:
+            videos = await youtube.get_recent_videos_with_stats(row["channel_id"], count=5)
+            return row, videos
+
+    results = await asyncio.gather(*[fetch_one(r) for r in rows], return_exceptions=True)
+
+    updated = 0
+    now_iso = datetime.utcnow().isoformat()
+    conn2 = get_conn()
+    try:
+        with dict_cursor(conn2) as cur:
+            for item in results:
+                if isinstance(item, Exception):
+                    continue
+                row, videos = item
+                if not videos:
+                    continue
+                ch_id = row["channel_id"]
+                sub_count = row.get("subscriber_count") or 0
+                roi = compute_roi_metrics(videos, sub_count)
+
+                desc = row.get("description") or ""
+                social_links = extract_social_links(desc)
+                social_links_json = _json2.dumps(social_links) if social_links else None
+
+                cur.execute(
+                    """
+                    UPDATE prospects SET
+                        avg_views_last5       = %s,
+                        avg_likes_last5       = %s,
+                        avg_comments_last5    = %s,
+                        upload_frequency_days = %s,
+                        roi_score             = %s,
+                        social_links          = COALESCE(%s, social_links)
+                    WHERE channel_id = %s
+                    """,
+                    (
+                        roi["avg_views_last5"],
+                        roi["avg_likes_last5"],
+                        roi["avg_comments_last5"],
+                        roi["upload_frequency_days"],
+                        roi["roi_score"],
+                        social_links_json,
+                        ch_id,
+                    ),
+                )
+
+                for v in videos:
+                    cur.execute(
+                        """
+                        INSERT INTO channel_recent_videos
+                            (channel_id, video_id, title, published_at, view_count,
+                             like_count, comment_count, thumbnail_url, fetched_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT (channel_id, video_id) DO UPDATE SET
+                            view_count    = EXCLUDED.view_count,
+                            like_count    = EXCLUDED.like_count,
+                            comment_count = EXCLUDED.comment_count,
+                            fetched_at    = EXCLUDED.fetched_at
+                        """,
+                        (
+                            ch_id, v["video_id"], v["title"], v["published_at"],
+                            v["view_count"], v["like_count"], v["comment_count"],
+                            v["thumbnail_url"], now_iso,
+                        ),
+                    )
+                updated += 1
+        conn2.commit()
+    finally:
+        conn2.close()
+
+    conn3 = get_conn()
+    try:
+        with dict_cursor(conn3) as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM prospects WHERE avg_views_last5 IS NULL")
+            remaining = cur.fetchone()["cnt"]
+    finally:
+        conn3.close()
+
+    return {"attempted": len(rows), "updated": updated, "remaining_without_videos": remaining}
 
 
 # ── Stats ─────────────────────────────────────────────────────────────────────

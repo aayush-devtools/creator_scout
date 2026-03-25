@@ -56,10 +56,33 @@ def init_db():
                 );
             """)
 
-            # Backfill column for existing databases.
-            cur.execute(
-                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS last_video_published_at TEXT"
-            )
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS channel_recent_videos (
+                    id           SERIAL PRIMARY KEY,
+                    channel_id   TEXT NOT NULL,
+                    video_id     TEXT NOT NULL,
+                    title        TEXT,
+                    published_at TEXT,
+                    view_count   INTEGER DEFAULT 0,
+                    like_count   INTEGER DEFAULT 0,
+                    comment_count INTEGER DEFAULT 0,
+                    thumbnail_url TEXT,
+                    fetched_at   TEXT,
+                    UNIQUE(channel_id, video_id)
+                );
+            """)
+
+            # Backfill columns for existing databases.
+            for col in [
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS last_video_published_at TEXT",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS avg_views_last5 INTEGER",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS avg_likes_last5 INTEGER",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS avg_comments_last5 INTEGER",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS upload_frequency_days REAL",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS roi_score REAL DEFAULT 0",
+                "ALTER TABLE prospects ADD COLUMN IF NOT EXISTS social_links TEXT",
+            ]:
+                cur.execute(col)
 
 
 def get_conn():

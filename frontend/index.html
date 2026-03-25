@@ -244,6 +244,81 @@
     /* ── Country tag ── */
     .country-tag { font-size: 13px; white-space: nowrap; }
 
+    /* ── ROI pill ── */
+    .roi-pill {
+      display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      background: rgba(0,212,170,.12); color: var(--accent2);
+    }
+    .roi-pill.roi-low { background: rgba(100,116,139,.12); color: var(--muted); }
+    .roi-pill.roi-mid { background: rgba(245,158,11,.12);  color: var(--warn); }
+
+    /* ── Avg views badge ── */
+    .avg-views { font-size: 13px; font-weight: 600; color: var(--text); }
+    .avg-views.na { color: var(--muted); }
+
+    /* ── Expandable detail row ── */
+    .detail-row td { padding: 0 !important; border-bottom: 1px solid var(--border); }
+    .detail-panel {
+      padding: 16px 20px 20px;
+      background: #13161f;
+      border-top: 1px solid var(--border);
+    }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    @media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+
+    .detail-section-title {
+      font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em;
+      color: var(--muted); margin-bottom: 10px;
+    }
+
+    /* Video cards */
+    .video-list { display: flex; flex-direction: column; gap: 8px; }
+    .video-card {
+      display: flex; align-items: flex-start; gap: 10px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    }
+    .video-thumb {
+      width: 80px; height: 48px; object-fit: cover; border-radius: 4px;
+      background: var(--border); flex-shrink: 0;
+    }
+    .video-info { flex: 1; min-width: 0; }
+    .video-title {
+      font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      margin-bottom: 4px;
+    }
+    .video-stats { display: flex; gap: 10px; flex-wrap: wrap; }
+    .video-stat { font-size: 11px; color: var(--muted); }
+    .video-stat strong { color: var(--text); font-weight: 600; }
+    .video-date { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .video-loading { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+    /* ROI breakdown */
+    .roi-breakdown { display: flex; flex-direction: column; gap: 8px; }
+    .roi-metric {
+      display: flex; justify-content: space-between; align-items: center;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 12px; font-size: 13px;
+    }
+    .roi-metric-label { color: var(--muted); }
+    .roi-metric-value { font-weight: 600; }
+    .roi-metric-value.green { color: var(--success); }
+    .roi-metric-value.amber { color: var(--warn); }
+    .roi-metric-value.muted { color: var(--muted); }
+
+    /* Social links */
+    .social-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .social-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 20px; padding: 4px 12px; font-size: 12px; color: var(--muted);
+      text-decoration: none; transition: all .15s;
+    }
+    .social-chip:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* Action detail button */
+    .action-btn.detail { border-color: var(--border); }
+    .action-btn.detail.open { border-color: var(--accent2); color: var(--accent2); }
+
     /* ── Empty state ── */
     .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
     .empty .icon { font-size: 40px; margin-bottom: 12px; }
@@ -322,6 +397,7 @@
         </label>
         <div class="filter-actions">
           <button type="button" class="mini-btn" id="backfillLastVideoBtn" onclick="backfillLastVideo()">Fetch missing Last video</button>
+          <button type="button" class="mini-btn" id="refreshVideosBtn" onclick="refreshVideos()" title="Fetch last-5-video performance for prospects missing it">Refresh video stats</button>
         </div>
         <select class="country-select" id="countryFilter" onchange="renderTable()">
           <option value="">🌍 All countries</option>
@@ -338,7 +414,8 @@
             <th>Channel</th>
             <th>Subscribers</th>
             <th>Priority</th>
-            <th>Sub-Scores</th>
+            <th>ROI</th>
+            <th>Avg Views (L5)</th>
             <th>Growth/mo</th>
             <th>Last Video</th>
             <th>Country</th>
@@ -464,6 +541,12 @@ async function loadStats() {
 async function loadProspects() {
   try {
     allProspects = await api('/api/prospects');
+    // Close any open detail panels before re-rendering
+    openDetailIds.forEach(id => {
+      const row = document.getElementById(`detail-row-${id}`);
+      if (row) row.remove();
+    });
+    openDetailIds.clear();
     populateCountryFilter();
     renderTable();
   } catch(e) { toast('Failed to load prospects', 'error'); }
@@ -577,31 +660,31 @@ function renderTable() {
   }
   empty.style.display = 'none';
 
-  tbody.innerHTML = rows.map(p => `
-    <tr id="row-${p.channel_id}">
+  tbody.innerHTML = rows.map(p => {
+    const hasVideos = p.avg_views_last5 != null;
+    const roiClass = !p.roi_score ? 'roi-low' : p.roi_score >= 50 ? '' : p.roi_score >= 25 ? 'roi-mid' : 'roi-low';
+    return `
+    <tr id="row-${p.channel_id}" style="cursor:pointer" onclick="toggleDetails('${p.channel_id}', event)">
       <td>
         <div class="channel-cell">
           ${p.thumbnail_url ? `<img class="channel-thumb" src="${p.thumbnail_url}" alt="" onerror="this.style.display='none'">` : ''}
           <div>
             <div class="channel-name">${esc(p.channel_name)}</div>
-            <a class="channel-link" href="${p.channel_url}" target="_blank">↗ YouTube</a>
+            <a class="channel-link" href="${p.channel_url}" target="_blank" onclick="event.stopPropagation()">↗ YouTube</a>
           </div>
         </div>
       </td>
       <td>${fmtNum(p.subscriber_count)}</td>
-      <td><span class="score-pill ${scoreClass(p.priority_score)}">${p.priority_score ?? '–'}</span></td>
       <td>
-        <div class="sub-scores">
-          <span class="sub-score" title="Growth">G ${p.growth_score ?? '–'}</span>
-          <span class="sub-score" title="Engagement">E ${p.engagement_score ?? '–'}</span>
-          <span class="sub-score" title="Similarity">S ${p.similarity_score ?? '–'}</span>
-        </div>
+        <span class="score-pill ${scoreClass(p.priority_score)}" title="G:${p.growth_score} E:${p.engagement_score} S:${p.similarity_score}">${p.priority_score ?? '–'}</span>
       </td>
+      <td>${p.roi_score != null ? `<span class="roi-pill ${roiClass}">${p.roi_score}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
+      <td><span class="${hasVideos ? 'avg-views' : 'avg-views na'}">${hasVideos ? fmtNum(p.avg_views_last5) : '–'}</span></td>
       <td>${p.monthly_sub_growth != null ? '+' + fmtNum(p.monthly_sub_growth) : '–'}</td>
       <td>${fmtDate(p.last_video_published_at)}</td>
       <td>${p.country ? `<span class="country-tag">${countryFlag(p.country)} ${p.country}</span>` : '<span style="color:var(--muted)">–</span>'}</td>
       <td><span class="status-badge status-${p.status}">${p.status}</span></td>
-      <td>
+      <td onclick="event.stopPropagation()">
         <div class="action-group">
           ${p.status !== 'outreach' ? `<button class="action-btn outreach" onclick="setStatus('${p.channel_id}','outreach')">Outreach</button>` : ''}
           ${p.status !== 'monitor'  ? `<button class="action-btn" onclick="setStatus('${p.channel_id}','monitor')">Monitor</button>` : ''}
@@ -609,7 +692,7 @@ function renderTable() {
         </div>
       </td>
     </tr>
-  `).join('');
+  `}).join('');
 }
 
 function scoreClass(score) {
@@ -678,6 +761,165 @@ async function removePartner(channelId) {
     loadPartners();
     toast('Partner removed', 'success');
   } catch(e) { toast('Failed to remove', 'error'); }
+}
+
+// ── Video detail panel ─────────────────────────────────────────────────────
+const openDetailIds = new Set();
+
+function toggleDetails(channelId, event) {
+  // Don't toggle if clicking on a button/link inside the row
+  if (event && event.target.closest('button, a')) return;
+
+  const detailRowId = `detail-row-${channelId}`;
+  const existing = document.getElementById(detailRowId);
+  if (existing) {
+    existing.remove();
+    openDetailIds.delete(channelId);
+    return;
+  }
+
+  const mainRow = document.getElementById(`row-${channelId}`);
+  if (!mainRow) return;
+  openDetailIds.add(channelId);
+
+  const p = allProspects.find(x => x.channel_id === channelId);
+  const colCount = 10;
+
+  const detailTr = document.createElement('tr');
+  detailTr.id = detailRowId;
+  detailTr.className = 'detail-row';
+  detailTr.innerHTML = `
+    <td colspan="${colCount}">
+      <div class="detail-panel">
+        <div class="detail-grid">
+          <div>
+            <div class="detail-section-title">Last 5 Videos Performance</div>
+            <div class="video-list" id="video-list-${channelId}">
+              <div class="video-loading">Loading videos…</div>
+            </div>
+          </div>
+          <div>
+            <div class="detail-section-title">ROI Metrics</div>
+            ${renderRoiBreakdown(p)}
+            ${renderSocialLinks(p)}
+          </div>
+        </div>
+      </div>
+    </td>
+  `;
+  mainRow.insertAdjacentElement('afterend', detailTr);
+
+  // Fetch videos from API
+  fetchAndRenderVideos(channelId);
+}
+
+async function fetchAndRenderVideos(channelId) {
+  const container = document.getElementById(`video-list-${channelId}`);
+  if (!container) return;
+  try {
+    const videos = await api(`/api/prospects/${channelId}/videos`);
+    if (!videos || !videos.length) {
+      container.innerHTML = '<div class="video-loading" style="color:var(--muted)">No video data yet — run Refresh video stats.</div>';
+      return;
+    }
+    container.innerHTML = videos.map(v => `
+      <div class="video-card">
+        ${v.thumbnail_url
+          ? `<img class="video-thumb" src="${v.thumbnail_url}" alt="" onerror="this.style.display='none'">`
+          : '<div class="video-thumb" style="background:var(--border)"></div>'}
+        <div class="video-info">
+          <div class="video-title" title="${esc(v.title)}">${esc(v.title)}</div>
+          <div class="video-stats">
+            <span class="video-stat"><strong>${fmtNum(v.view_count)}</strong> views</span>
+            <span class="video-stat"><strong>${fmtNum(v.like_count)}</strong> likes</span>
+            <span class="video-stat"><strong>${fmtNum(v.comment_count)}</strong> comments</span>
+          </div>
+          <div class="video-date">${fmtDate(v.published_at)}</div>
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    container.innerHTML = `<div class="video-loading" style="color:var(--danger)">${e.message || 'Failed to load videos'}</div>`;
+  }
+}
+
+function renderRoiBreakdown(p) {
+  if (!p) return '';
+  const viewRate = (p.avg_views_last5 != null && p.subscriber_count)
+    ? ((p.avg_views_last5 / p.subscriber_count) * 100).toFixed(1) + '%'
+    : '–';
+  const engRate = (p.avg_views_last5 && (p.avg_likes_last5 != null || p.avg_comments_last5 != null))
+    ? (((p.avg_likes_last5 || 0) + (p.avg_comments_last5 || 0)) / p.avg_views_last5 * 100).toFixed(2) + '%'
+    : '–';
+  const freq = p.upload_frequency_days != null
+    ? (p.upload_frequency_days < 1 ? '<1 day' : `~${p.upload_frequency_days}d between uploads`)
+    : '–';
+
+  const vClass = p.avg_views_last5 != null ? (p.avg_views_last5 > 50000 ? 'green' : p.avg_views_last5 > 10000 ? 'amber' : 'muted') : 'muted';
+  const rClass = p.roi_score >= 50 ? 'green' : p.roi_score >= 25 ? 'amber' : 'muted';
+
+  return `
+    <div class="roi-breakdown">
+      <div class="roi-metric">
+        <span class="roi-metric-label">ROI Score</span>
+        <span class="roi-metric-value ${rClass}">${p.roi_score ?? '–'} / 100</span>
+      </div>
+      <div class="roi-metric">
+        <span class="roi-metric-label">Avg Views (last 5)</span>
+        <span class="roi-metric-value ${vClass}">${fmtNum(p.avg_views_last5)}</span>
+      </div>
+      <div class="roi-metric">
+        <span class="roi-metric-label">View Rate (views/subs)</span>
+        <span class="roi-metric-value">${viewRate}</span>
+      </div>
+      <div class="roi-metric">
+        <span class="roi-metric-label">Engagement Rate</span>
+        <span class="roi-metric-value">${engRate}</span>
+      </div>
+      <div class="roi-metric">
+        <span class="roi-metric-label">Avg Likes / Comments</span>
+        <span class="roi-metric-value">${fmtNum(p.avg_likes_last5)} / ${fmtNum(p.avg_comments_last5)}</span>
+      </div>
+      <div class="roi-metric">
+        <span class="roi-metric-label">Upload Frequency</span>
+        <span class="roi-metric-value">${freq}</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderSocialLinks(p) {
+  if (!p || !p.social_links) return '';
+  let links;
+  try { links = typeof p.social_links === 'string' ? JSON.parse(p.social_links) : p.social_links; }
+  catch (e) { return ''; }
+  const entries = Object.entries(links);
+  if (!entries.length) return '';
+  const icons = { github: '⚙', twitter: '✖', linkedin: '💼', website: '🌐' };
+  return `
+    <div class="detail-section-title" style="margin-top:16px">Social Presence</div>
+    <div class="social-links">
+      ${entries.map(([key, url]) => `
+        <a class="social-chip" href="${url.startsWith('http') ? url : 'https://' + url}" target="_blank" rel="noopener">
+          ${icons[key] || '🔗'} ${key}
+        </a>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function refreshVideos() {
+  const btn = document.getElementById('refreshVideosBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
+  try {
+    const res = await api('/api/prospects/refresh-videos?limit=40');
+    toast(`Updated ${res.updated} of ${res.attempted} · ${res.remaining_without_videos} still pending`, 'success');
+    await loadProspects();
+  } catch (e) {
+    toast(e.message || 'Refresh failed', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Refresh video stats'; }
+  }
 }
 
 // ── Scout ──────────────────────────────────────────────────────────────────
